@@ -115,7 +115,7 @@ def init_anat_average_wf(
         IntensityClip(p_min=10.0, p_max=99.5), iterfield="in_file", name="clip_postinu"
     )
 
-    # 4. Reorient T2w image(s) to RAS and resample to common voxel space
+    # 4. Reorient anatomical image(s) to RAS and resample to common voxel space
     ref_dimensions = pe.Node(TemplateDimensions(), name="ref_dimensions")
     conform = pe.MapNode(Conform(), iterfield="in_file", name="conform")
     # fmt:off
@@ -130,8 +130,9 @@ def init_anat_average_wf(
             ("t1w_valid_list", "in_file"),
             ("target_zooms", "target_zooms"),
             ("target_shape", "target_shape")]),
-        (ref_dimensions, outputnode, [("out_report", "out_report"),
-                                      ("t1w_valid_list", "valid_list")]),
+        (ref_dimensions, outputnode, [("out_report", "out_report")]),
+                                    #   ("t1w_valid_list", "valid_list")]),
+        (inputnode, outputnode, [("in_files", "valid_list")]),
     ])
     # fmt:on
 
