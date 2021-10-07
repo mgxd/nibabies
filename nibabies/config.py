@@ -11,7 +11,7 @@ Settings are stored using :abbr:`ToML (Tom's Markup Language)`.
 The module has a :py:func:`~nibabies.config.to_filename` function to allow writting out
 the settings to hard disk in *ToML* format, which looks like:
 
-.. literalinclude:: ../fmriprep/data/tests/config.toml
+.. literalinclude:: ../nibabies/data/tests/config.toml
    :language: toml
    :name: nibabies.toml
    :caption: **Example file representation of nibabies settings**.
@@ -68,6 +68,7 @@ The :py:mod:`config` is responsible for other conveniency actions.
 
 """
 import os
+import sys
 from multiprocessing import set_start_method
 
 # Disable NiPype etelemetry always
@@ -86,7 +87,6 @@ except RuntimeError:
 finally:
     # Defer all custom import for after initializing the forkserver and
     # ignoring the most annoying warnings
-    import sys
     import random
     from uuid import uuid4
     from time import strftime
@@ -113,6 +113,8 @@ elif os.getenv("NIBABIES_WARNINGS", "0").lower() in ("1", "on", "true", "y", "ye
     # allow disabling warnings on development versions
     # https://github.com/nipreps/fmriprep/pull/2080#discussion_r409118765
     from ._warnings import logging
+
+    os.environ["PYTHONWARNINGS"] = "ignore"
 else:
     import logging
 
@@ -140,7 +142,7 @@ if os.getenv("IS_DOCKER_8395080871"):
     _cgroup = Path("/proc/1/cgroup")
     if _cgroup.exists() and "docker" in _cgroup.read_text():
         _docker_ver = os.getenv("DOCKER_VERSION_8395080871")
-        _exec_env = "fmriprep-docker" if _docker_ver else "docker"
+        _exec_env = "nibabies-docker" if _docker_ver else "docker"
     del _cgroup
 
 _fs_license = os.getenv("FS_LICENSE")
@@ -189,7 +191,7 @@ except Exception:
 
 # Debug modes are names that influence the exposure of internal details to
 # the user, either through additional derivatives or increased verbosity
-DEBUG_MODES = ("compcor",)
+DEBUG_MODES = ("compcor", "registration", "fieldmaps")
 
 
 class _Config:
@@ -367,8 +369,6 @@ class execution(_Config):
     """Debug mode(s)."""
     echo_idx = None
     """Select a particular echo for multi-echo EPI datasets."""
-    fmriprep_dir = None
-    """Root of fMRIPrep BIDS Derivatives dataset. Depends on output_layout."""
     fs_license_file = _fs_license
     """An existing file containing a FreeSurfer license."""
     fs_subjects_dir = None
@@ -383,6 +383,8 @@ class execution(_Config):
     """Utilize uncompressed NIfTIs and other tricks to minimize memory allocation."""
     md_only_boilerplate = False
     """Do not convert boilerplate from MarkDown to LaTex and HTML."""
+    nibabies_dir = None
+    """Root of NiBabies BIDS Derivatives dataset. Depends on output_layout."""
     notrack = False
     """Do not monitor *nibabies* using Sentry.io."""
     output_dir = None
@@ -415,11 +417,11 @@ class execution(_Config):
         "anat_derivatives",
         "bids_dir",
         "bids_database_dir",
-        "fmriprep_dir",
         "fs_license_file",
         "fs_subjects_dir",
         "layout",
         "log_dir",
+        "nibabies_dir",
         "output_dir",
         "segmentation_atlases_dir",
         "templateflow_home",
@@ -489,10 +491,6 @@ class workflow(_Config):
     """Age (in months)"""
     anat_only = False
     """Execute the anatomical preprocessing only."""
-    anat_modality = "t1w"
-    """Structural MRI modality"""
-    ants_affine_init = None
-    """Customize ants affine initialization"""
     aroma_err_on_warn = None
     """Cast AROMA warnings to errors."""
     aroma_melodic_dim = None
@@ -507,6 +505,8 @@ class workflow(_Config):
     """Generate HCP Grayordinates, accepts either ``'91k'`` (default) or ``'170k'``."""
     dummy_scans = None
     """Set a number of initial scans to be considered nonsteady states."""
+    fd_radius = 45
+    """Head radius in mm for framewise displacement calculation"""
     fmap_bspline = None
     """Regularize fieldmaps with a field of B-Spline basis."""
     fmap_demean = None
@@ -541,7 +541,7 @@ class workflow(_Config):
     instance keeping standard and nonstandard spaces."""
     use_aroma = None
     """Run ICA-:abbr:`AROMA (automatic removal of motion artifacts)`."""
-    use_bbr = None
+    use_bbr = False
     """Run boundary-based registration for BOLD-to-T1w registration."""
     use_syn_sdc = None
     """Run *fieldmap-less* susceptibility-derived distortions estimation
@@ -686,34 +686,29 @@ def init_spaces(checkpoint=True):
     if checkpoint and not spaces.is_cached():
         spaces.checkpoint()
 
-    if "UNCInfant" not in [s.space for s in spaces.references]:
-        age = workflow.age_months or 12
-        if age <= 2:
-            cohort = 1
-        elif age <= 12:
-            cohort = 2
-        else:
-            cohort = 3
-        # add the UNC space
-        spaces.add(Reference("UNCInfant", {'cohort': cohort}))
+    if workflow.age_months is not None:
+        from .utils.misc import cohort_by_months
 
-    # # Add the default standard space if not already present (required by several sub-workflows)
-    # if "MNI152NLin2009cAsym" not in spaces.get_spaces(nonstandard=False, dim=(3,)):
-    #     spaces.add(Reference("MNI152NLin2009cAsym", {}))
+        # cohort workaround
+        if any(
+            "MNIInfant" in space.split(":")[0]
+            for space in spaces.get_spaces(nonstandard=False, dim=(3,))
+        ):
+            cohort = cohort_by_months("MNIInfant", workflow.age_months)
+            spaces.add(Reference("MNIInfant", {"cohort": cohort}))
 
     # Ensure user-defined spatial references for outputs are correctly parsed.
     # Certain options require normalization to a space not explicitly defined by users.
     # These spaces will not be included in the final outputs.
-    # if workflow.use_aroma:
-    #     # Make sure there's a normalization to FSL for AROMA to use.
-    #     spaces.add(Reference("MNI152NLin6Asym", {"res": "2"}))
+    if workflow.use_aroma:
+        # Make sure there's a normalization to FSL for AROMA to use.
+        spaces.add(Reference("MNI152NLin6Asym", {"res": "2"}))
 
-    # cifti_output = workflow.cifti_output
-    # if cifti_output:
-    #     # CIFTI grayordinates to corresponding FSL-MNI resolutions.
-    #     vol_res = "2" if cifti_output == "91k" else "1"
-    #     spaces.add(Reference("fsaverage", {"den": "164k"}))
-    #     spaces.add(Reference("MNI152NLin6Asym", {"res": vol_res}))
+    if workflow.cifti_output:
+        # CIFTI grayordinates to corresponding FSL-MNI resolutions.
+        vol_res = "2" if workflow.cifti_output == "91k" else "1"
+        spaces.add(Reference("fsaverage", {"den": "164k"}))
+        spaces.add(Reference("MNI152NLin6Asym", {"res": vol_res}))
 
     # Make the SpatialReferences object available
     workflow.spaces = spaces

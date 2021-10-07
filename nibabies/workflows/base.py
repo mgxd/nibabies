@@ -1,7 +1,7 @@
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
 """
-fMRIPrep base processing workflows
+NiBabies base processing workflows
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 .. autofunction:: init_nibabies_wf
@@ -9,6 +9,7 @@ fMRIPrep base processing workflows
 
 """
 
+from nibabies.utils.bids import group_bolds_ref
 import sys
 import os
 from copy import deepcopy
@@ -17,8 +18,9 @@ from nipype.pipeline import engine as pe
 from nipype.interfaces import utility as niu
 
 from .. import config
-from fmriprep.interfaces import SubjectSummary, AboutSummary, DerivativesDataSink
-# from .bold import init_func_preproc_wf
+from ..interfaces import DerivativesDataSink
+from ..interfaces.reports import SubjectSummary, AboutSummary
+from .bold import init_func_preproc_wf
 
 
 def init_nibabies_wf():
@@ -66,7 +68,7 @@ def init_nibabies_wf():
         single_subject_wf = init_single_subject_wf(subject_id)
 
         single_subject_wf.config["execution"]["crashdump_dir"] = str(
-            config.execution.fmriprep_dir
+            config.execution.nibabies_dir
             / f"sub-{subject_id}"
             / "log"
             / config.execution.run_uuid
@@ -82,7 +84,7 @@ def init_nibabies_wf():
 
         # Dump a copy of the config file into the log directory
         log_dir = (
-            config.execution.fmriprep_dir
+            config.execution.nibabies_dir
             / f"sub-{subject_id}"
             / "log"
             / config.execution.run_uuid
@@ -150,7 +152,7 @@ def init_single_subject_wf(subject_id):
 
     anat_only = config.workflow.anat_only
     anat_derivatives = config.execution.anat_derivatives
-    anat_modality = config.workflow.anat_modality
+    anat_modality = "t1w" if subject_data["t1w"] else "t2w"
     spaces = config.workflow.spaces
     # Make sure we always go through these two checks
     if not anat_only and not subject_data["bold"]:
@@ -224,7 +226,7 @@ It is released under the [CC0]\
         nilearn_ver=NILEARN_VERSION
     )
 
-    fmriprep_dir = str(config.execution.fmriprep_dir)
+    nibabies_dir = str(config.execution.nibabies_dir)
 
     inputnode = pe.Node(
         niu.IdentityInterface(fields=["subjects_dir"]), name="inputnode"
@@ -262,7 +264,7 @@ It is released under the [CC0]\
 
     ds_report_summary = pe.Node(
         DerivativesDataSink(
-            base_directory=fmriprep_dir,
+            base_directory=nibabies_dir,
             desc="summary",
             datatype="figures",
             dismiss_entities=("echo",),
@@ -273,7 +275,7 @@ It is released under the [CC0]\
 
     ds_report_about = pe.Node(
         DerivativesDataSink(
-            base_directory=fmriprep_dir,
+            base_directory=nibabies_dir,
             desc="about",
             datatype="figures",
             dismiss_entities=("echo",),
@@ -284,17 +286,17 @@ It is released under the [CC0]\
 
     # Preprocessing of anatomical (includes registration to UNCInfant)
     anat_preproc_wf = init_infant_anat_wf(
-        ants_affine_init=config.workflow.ants_affine_init or True,
+        ants_affine_init=True,
         age_months=config.workflow.age_months,
         anat_modality=anat_modality,
-        t1w=subject_data['t1w'],
-        t2w=subject_data['t2w'],
+        t1w=subject_data["t1w"],
+        t2w=subject_data["t2w"],
         bids_root=config.execution.bids_dir,
         existing_derivatives=anat_derivatives,
         freesurfer=config.workflow.run_reconall,
         longitudinal=config.workflow.longitudinal,
         omp_nthreads=config.nipype.omp_nthreads,
-        output_dir=fmriprep_dir,
+        output_dir=nibabies_dir,
         segmentation_atlases=config.execution.segmentation_atlases_dir,
         skull_strip_mode=config.workflow.skull_strip_t1w,
         skull_strip_template=Reference.from_string(
@@ -376,12 +378,27 @@ It is released under the [CC0]\
     if anat_only:
         return workflow
 
-    raise NotImplementedError("BOLD processing is not yet implemented.")
+    # Susceptibility distortion correction
+    fmap_estimators = None
+    if any((config.workflow.use_syn_sdc, config.workflow.force_syn)):
+        config.loggers.workflow.critical("SyN processing is not yet implemented.")
+
+    if "fieldmaps" not in config.workflow.ignore:
+        from sdcflows.utils.wrangler import find_estimators
+
+        # SDC Step 1: Run basic heuristics to identify available data for fieldmap estimation
+        # For now, no fmapless
+        fmap_estimators = find_estimators(
+            layout=config.execution.layout,
+            subject=subject_id,
+            fmapless=False,  # config.workflow.use_syn,
+            force_fmapless=False,  # config.workflow.force_syn,
+        )
 
     # Append the functional section to the existing anatomical exerpt
     # That way we do not need to stream down the number of bold datasets
     anat_preproc_wf.__postdesc__ = (
-        (anat_preproc_wf.__postdesc__ or "")
+        (anat_preproc_wf.__postdesc__ if hasattr(anat_preproc_wf, '__postdesc__') else "")
         + f"""
 
 Functional data preprocessing
@@ -391,32 +408,148 @@ tasks and sessions), the following preprocessing was performed.
 """
     )
 
-    for bold_file in subject_data["bold"]:
-        func_preproc_wf = init_func_preproc_wf(bold_file)
+    # calculate reference image(s) for BOLD images
+    # group all BOLD files based on same:
+    # 1) session
+    # 2) PE direction
+    # 3) total readout time
+    from niworkflows.workflows.epi.refmap import init_epi_reference_wf
 
+    _, bold_groupings = group_bolds_ref(
+        layout=config.execution.layout,
+        subject=subject_id
+    )
+    if any(not x for x in bold_groupings):
+        print("No BOLD files found for one or more reference groupings")
+        return workflow
+
+    func_preproc_wfs = []
+    has_fieldmap = bool(fmap_estimators)
+    for idx, bold_files in enumerate(bold_groupings):
+        bold_ref_wf = init_epi_reference_wf(
+            auto_bold_nss=True,
+            name=f'bold_reference_wf{idx}',
+            omp_nthreads=config.nipype.omp_nthreads
+        )
+        bold_ref_wf.inputs.inputnode.in_files = bold_files
+        for idx, bold_file in enumerate(bold_files):
+            func_preproc_wf = init_func_preproc_wf(
+                bold_file,
+                has_fieldmap=has_fieldmap,
+            )
+            # fmt: off
+            workflow.connect([
+                (bold_ref_wf, func_preproc_wf, [
+                    ('outputnode.epi_ref_file', 'inputnode.bold_ref'),
+                    (
+                        ('outputnode.xfm_files', _select_iter_idx, idx),
+                        'inputnode.bold_ref_xfm'),
+                    (
+                        ('outputnode.n_dummy', _select_iter_idx, idx),
+                        'inputnode.n_dummy_scans'),
+                ]),
+                (anat_preproc_wf, func_preproc_wf, [
+                    ('outputnode.anat_preproc', 'inputnode.anat_preproc'),
+                    ('outputnode.anat_mask', 'inputnode.anat_mask'),
+                    ('outputnode.anat_brain', 'inputnode.anat_brain'),
+                    ('outputnode.anat_dseg', 'inputnode.anat_dseg'),
+                    ('outputnode.anat_aseg', 'inputnode.anat_aseg'),
+                    ('outputnode.anat_aparc', 'inputnode.anat_aparc'),
+                    ('outputnode.anat_tpms', 'inputnode.anat_tpms'),
+                    ('outputnode.template', 'inputnode.template'),
+                    ('outputnode.anat2std_xfm', 'inputnode.anat2std_xfm'),
+                    ('outputnode.std2anat_xfm', 'inputnode.std2anat_xfm'),
+                    # Undefined if --fs-no-reconall, but this is safe
+                    ('outputnode.subjects_dir', 'inputnode.subjects_dir'),
+                    ('outputnode.subject_id', 'inputnode.subject_id'),
+                    ('outputnode.anat2fsnative_xfm', 'inputnode.anat2fsnative_xfm'),
+                    ('outputnode.fsnative2anat_xfm', 'inputnode.fsnative2anat_xfm'),
+                ]),
+            ])
+            # fmt: on
+            func_preproc_wfs.append(func_preproc_wf)
+
+    if not has_fieldmap:
+        config.loggers.workflow.warning(
+            "Data for fieldmap estimation not present. Please note that these data "
+            "will not be corrected for susceptibility distortions."
+        )
+        return workflow
+
+    config.loggers.workflow.info(
+        f"Fieldmap estimators found: {[e.method for e in fmap_estimators]}"
+    )
+
+    from sdcflows.workflows.base import init_fmap_preproc_wf
+    from sdcflows import fieldmaps as fm
+
+    fmap_wf = init_fmap_preproc_wf(
+        sloppy=bool(config.execution.sloppy),
+        debug="fieldmaps" in config.execution.debug,
+        estimators=fmap_estimators,
+        omp_nthreads=config.nipype.omp_nthreads,
+        output_dir=nibabies_dir,
+        subject=subject_id,
+    )
+    fmap_wf.__desc__ = f"""
+Preprocessing of B<sub>0</sub> inhomogeneity mappings
+
+: A total of {len(fmap_estimators)} fieldmaps were found available within the input
+BIDS structure for this particular subject.
+"""
+
+    for func_preproc_wf in func_preproc_wfs:
         # fmt: off
         workflow.connect([
-            (anat_preproc_wf, func_preproc_wf, [
-                ('outputnode.anat_preproc', 'inputnode.anat_preproc'),
-                ('outputnode.anat_mask', 'inputnode.anat_mask'),
-                ('outputnode.anat_dseg', 'inputnode.anat_dseg'),
-                ('outputnode.anat_aseg', 'inputnode.anat_aseg'),
-                ('outputnode.anat_aparc', 'inputnode.anat_aparc'),
-                ('outputnode.anat_tpms', 'inputnode.anat_tpms'),
-                ('outputnode.template', 'inputnode.template'),
-                ('outputnode.anat2std_xfm', 'inputnode.anat2std_xfm'),
-                ('outputnode.std2anat_xfm', 'inputnode.std2anat_xfm'),
-                # Undefined if --fs-no-reconall, but this is safe
-                ('outputnode.subjects_dir', 'inputnode.subjects_dir'),
-                ('outputnode.subject_id', 'inputnode.subject_id'),
-                ('outputnode.anat2fsnative_xfm', 'inputnode.t1w2fsnative_xfm'),
-                ('outputnode.fsnative2anat_xfm', 'inputnode.fsnative2t1w_xfm'),
+            (fmap_wf, func_preproc_wf, [
+                ("outputnode.fmap", "inputnode.fmap"),
+                ("outputnode.fmap_ref", "inputnode.fmap_ref"),
+                ("outputnode.fmap_coeff", "inputnode.fmap_coeff"),
+                ("outputnode.fmap_mask", "inputnode.fmap_mask"),
+                ("outputnode.fmap_id", "inputnode.fmap_id"),
+                ("outputnode.method", "inputnode.sdc_method"),
             ]),
         ])
         # fmt: on
+
+    # Overwrite ``out_path_base`` of sdcflows's DataSinks
+    for node in fmap_wf.list_node_names():
+        if node.split(".")[-1].startswith("ds_"):
+            fmap_wf.get_node(node).interface.out_path_base = ""
+
+    # Step 3: Manually connect PEPOLAR
+    for estimator in fmap_estimators:
+        config.loggers.workflow.info(f"""\
+Setting-up fieldmap "{estimator.bids_id}" ({estimator.method}) with \
+<{', '.join(s.path.name for s in estimator.sources)}>""")
+        if estimator.method in (fm.EstimatorType.MAPPED, fm.EstimatorType.PHASEDIFF):
+            continue
+
+        suffices = set(s.suffix for s in estimator.sources)
+
+        if estimator.method == fm.EstimatorType.PEPOLAR and sorted(suffices) == ["epi"]:
+            getattr(fmap_wf.inputs, f"in_{estimator.bids_id}").in_data = [
+                str(s.path) for s in estimator.sources
+            ]
+            getattr(fmap_wf.inputs, f"in_{estimator.bids_id}").metadata = [
+                s.metadata for s in estimator.sources
+            ]
+            continue
+
+        if estimator.method == fm.EstimatorType.PEPOLAR:
+            raise NotImplementedError(
+                "Sophisticated PEPOLAR schemes (e.g., using DWI+EPI) are unsupported."
+            )
 
     return workflow
 
 
 def _prefix(subid):
     return subid if subid.startswith("sub-") else f"sub-{subid}"
+
+
+def _select_iter_idx(in_list, idx):
+    """Returns a specific index of a list/tuple"""
+    if isinstance(in_list, (tuple, list)):
+        return in_list[idx]
+    raise AttributeError(f"Input {in_list} is incompatible type: {type(in_list)}")

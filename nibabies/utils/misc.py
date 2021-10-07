@@ -41,9 +41,29 @@ def check_deps(workflow):
 
 
 def cohort_by_months(template, months):
+    """
+    Produce a recommended cohort based on partipants age
+    """
     cohort_key = {
-        'MNIInfant': (2, 5, 8, 11, 14, 17, 21, 27, 33, 44, 60),
-        'UNCInfant': (8, 12, 24),
+        'MNIInfant': (
+            # upper bound of template | cohort
+            2,  # 1
+            5,  # 2
+            8,  # 3
+            11,  # 4
+            14,  # 5
+            17,  # 6
+            21,  # 7
+            27,  # 8
+            33,  # 9
+            44,  # 10
+            60,  # 11
+        ),
+        'UNCInfant': (
+            8,  # 1
+            12,  # 2
+            24,  # 3
+        ),
     }
     ages = cohort_key.get(template)
     if ages is None:
@@ -52,7 +72,6 @@ def cohort_by_months(template, months):
     for cohort, age in enumerate(ages, 1):
         if months <= age:
             return cohort
-
     raise KeyError("Age exceeds all cohorts!")
 
 
@@ -70,3 +89,21 @@ def check_total_memory(recommended_gb):
 
     tot = int(psutil.virtual_memory().total / 1024 ** 3)
     return tot >= recommended_gb
+
+
+def combine_meepi_source(in_files):
+    """
+    Create a new source name when optimally
+    combining multiple multi-echo EPIs
+    >>> combine_meepi_source([
+    ...     'sub-01_run-01_echo-1_bold.nii.gz',
+    ...     'sub-01_run-01_echo-2_bold.nii.gz',
+    ...     'sub-01_run-01_echo-3_bold.nii.gz',])
+    'sub-01_run-01_bold.nii.gz'
+    """
+    import os
+    from nipype.utils.filemanip import filename_to_list
+    base, in_file = os.path.split(filename_to_list(in_files)[0])
+    entities = [ent for ent in in_file.split('_') if not ent.startswith('echo-')]
+    basename = '_'.join(entities)
+    return os.path.join(base, basename)
