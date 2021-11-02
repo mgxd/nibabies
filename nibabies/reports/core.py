@@ -1,30 +1,5 @@
 from pathlib import Path
-from niworkflows.reports.core import Report as _Report
-
-
-class Report(_Report):
-    # TODO: Upstream ``Report._load_config`` to niworkflows
-    def _load_config(self, config):
-        from yaml import safe_load as load
-
-        settings = load(config.read_text())
-        self.packagename = self.packagename or settings.get("package", None)
-
-        # Removed from here: Appending self.packagename to self.root and self.out_dir
-        # In this version, pass reportlets_dir and out_dir with nibabies in the path.
-
-        if self.subject_id is not None:
-            self.root = self.root / "sub-{}".format(self.subject_id)
-
-        if "template_path" in settings:
-            self.template_path = config.parent / settings["template_path"]
-
-        self.index(settings["sections"])
-
-
-#
-# The following are the interface used directly by NiBabies
-#
+from niworkflows.reports.core import Report
 
 
 def run_reports(
