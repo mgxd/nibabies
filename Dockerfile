@@ -54,17 +54,22 @@ FROM downloader as afni
 # The download link can point to newer releases
 # As a safeguard, take advantage of Docker caching, and
 # Bump the date to current to update AFNI
-RUN echo "2023.06.09"
-RUN mkdir -p /opt/afni-latest \
-    && curl -fsSL --retry 5 https://afni.nimh.nih.gov/pub/dist/tgz/linux_openmp_64.tgz \
+ARG TARGETARCH
+RUN echo "2024.06.07" && set -eux \
+    && if [ $TARGETARCH  = "x86" ]; then \
+        AFNI_TARGET="linux_openmp_64"; \
+    elif [ $TARGETARCH  = "arm64" ]; then \
+        AFNI_TARGET="macos_13_ARM"; \
+    fi && mkdir -p /opt/afni-latest \
+    && curl -fsSL --retry 5 https://afni.nimh.nih.gov/pub/dist/tgz/$AFNI_TARGET.tgz \
     | tar -xz -C /opt/afni-latest --strip-components 1 \
-    --exclude "linux_openmp_64/*.gz" \
-    --exclude "linux_openmp_64/funstuff" \
-    --exclude "linux_openmp_64/shiny" \
-    --exclude "linux_openmp_64/afnipy" \
-    --exclude "linux_openmp_64/lib/RetroTS" \
-    --exclude "linux_openmp_64/lib_RetroTS" \
-    --exclude "linux_openmp_64/meica.libs" \
+    --exclude "$AFNI_TARGET/*.gz" \
+    --exclude "$AFNI_TARGET/funstuff" \
+    --exclude "$AFNI_TARGET/shiny" \
+    --exclude "$AFNI_TARGET/afnipy" \
+    --exclude "$AFNI_TARGET/lib/RetroTS" \
+    --exclude "$AFNI_TARGET/lib_RetroTS" \
+    --exclude "$AFNI_TARGET/meica.libs" \
     # Keep only what we use
     && find /opt/afni-latest -type f -not \( \
         -name "3dTshift" -or \
@@ -74,10 +79,16 @@ RUN mkdir -p /opt/afni-latest \
 
 # ANTs 2.4.4
 FROM downloader as ants
-RUN mkdir -p /opt && \
-    curl -sSLO "https://github.com/ANTsX/ANTs/releases/download/v2.4.4/ants-2.4.4-ubuntu-22.04-X64-gcc.zip" && \
-    unzip ants-2.4.4-ubuntu-22.04-X64-gcc.zip -d /opt && \
-    rm ants-2.4.4-ubuntu-22.04-X64-gcc.zip
+ARG TARGETARCH
+WORKDIR /opt
+RUN echo "2.5.3" \
+    && if [ $TARGETARCH  = "x86" ]; then \
+        ANTS_TARGET="ants-2.5.3-ubuntu-22.04-X64-gcc.zip"; \
+    elif [ $TARGETARCH  = "arm64" ]; then \
+        ANTS_TARGET="ants-2.5.3-macos-14-ARM64-clang.zip"; \
+    curl -sSLO $ANTS_TARGET && \
+    unzip $ANTS_TARGET -d /opt && \
+    rm $ANTS_TARGET
 
 # Connectome Workbench 1.5.0
 FROM downloader as workbench
