@@ -11,8 +11,7 @@ __org__ = 'nipreps'
 __packagename__ = 'nibabies'
 __copyright__ = 'Copyright 2023, Center for Reproducible Neuroscience, Stanford University'
 __credits__ = (
-    'Contributors: please check the ``.zenodo.json`` file at the top-level folder'
-    'of the repository'
+    'Contributors: please check the ``.zenodo.json`` file at the top-level folderof the repository'
 )
 __url__ = f'https://github.com/{__org__}/{__packagename__}'
 

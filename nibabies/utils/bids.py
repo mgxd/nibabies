@@ -63,7 +63,7 @@ def write_derivative_description(bids_dir, deriv_dir, dataset_links=None):
     if 'NIBABIES_DOCKER_TAG' in os.environ:
         desc['GeneratedBy'][0]['Container'] = {
             'Type': 'docker',
-            'Tag': f"nipreps/nibabies:{os.environ['NIBABIES_DOCKER_TAG']}",
+            'Tag': f'nipreps/nibabies:{os.environ["NIBABIES_DOCKER_TAG"]}',
         }
     if 'NIBABIES_SINGULARITY_URL' in os.environ:
         desc['GeneratedBy'][0]['Container'] = {
