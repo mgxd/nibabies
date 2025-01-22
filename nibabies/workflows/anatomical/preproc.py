@@ -6,20 +6,23 @@ from niworkflows.engine.workflows import LiterateWorkflow
 def init_anat_preproc_wf(
     *,
     bspline_fitting_distance: int = 200,
+    clipping: bool = False,
     name: str = 'anat_preproc_wf',
 ) -> LiterateWorkflow:
-    """Polish up raw anatomical data.
-
+    """
     This workflow accepts T1w/T2w images as inputs (either raw or a merged template) and performs:
-    - Intensity clipping
     - N4 Bias Field Correction
+    - Intensity Clipping (optional)
 
     The outputs of this workflow will be a structural reference used for subsequent processing.
 
     Inputs
     ------
     in_anat : :obj:`str`
-        A single volume T1w/T2w image
+        A single denoised volume T1w/T2w image.
+        If multiple runs were found, this is a merged template.
+    clipping : :obj:`bool`
+        Perform intensity clipping prior & after N4 bias correction (default: False)
 
     Outputs
     -------
@@ -30,7 +33,7 @@ def init_anat_preproc_wf(
     from niworkflows.interfaces.header import ValidateImage
     from niworkflows.interfaces.nibabel import IntensityClip
 
-    wf = LiterateWorkflow(name=name)
+    workflow = LiterateWorkflow(name=name)
     inputnode = pe.Node(
         niu.IdentityInterface(fields=['in_anat']),
         name='inputnode',
@@ -42,7 +45,6 @@ def init_anat_preproc_wf(
 
     # validate image
     validate = pe.Node(ValidateImage(), name='anat_validate', run_without_submitting=True)
-    clip = pe.Node(IntensityClip(p_min=10.0, p_max=99.5), name='clip')
     n4_correct = pe.Node(
         N4BiasFieldCorrection(
             dimension=3,
@@ -56,16 +58,27 @@ def init_anat_preproc_wf(
         ),
         name='n4_correct',
     )
-    final_clip = pe.Node(IntensityClip(p_min=5.0, p_max=99.5), name='final_clip')
 
-    wf.connect([
-        (inputnode, validate, [('in_anat', 'in_file')]),
-        (validate, clip, [('out_file', 'in_file')]),
-        (clip, n4_correct, [('out_file', 'input_image')]),
-        (n4_correct, final_clip, [('output_image', 'in_file')]),
-        (final_clip, outputnode, [('out_file', 'anat_preproc')]),
-    ])  # fmt:skip
-    return wf
+    workflow.connect(inputnode, 'in_anat', validate, 'in_file')
+
+    if clipping:
+        clip_pre = pe.Node(IntensityClip(p_min=10.0, p_max=99.5), name='clip_pre_n4')
+        clip_post = pe.Node(IntensityClip(p_min=5.0, p_max=99.5), name='clip_post_n4')
+
+        workflow.connect([
+            (validate, clip_pre, [('out_file', 'in_file')]),
+            (clip_pre, n4_correct, [('out_file', 'input_image')]),
+            (n4_correct, clip_post, [('output_image', 'in_file')]),
+            (clip_post, outputnode, [('out_file', 'anat_preproc')]),
+        ])  # fmt:skip
+
+    else:
+        workflow.connect([
+            (validate, n4_correct, [('out_file', 'input_image')]),
+            (n4_correct, outputnode, [('output_image', 'anat_preproc')]),
+        ])  # fmt:skip
+
+    return workflow
 
 
 def init_csf_norm_wf(name: str = 'csf_norm_wf') -> LiterateWorkflow:
