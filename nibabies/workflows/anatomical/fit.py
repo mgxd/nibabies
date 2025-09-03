@@ -1263,7 +1263,11 @@ def init_infant_anat_fit_wf(
         LOGGER.info(f'ANAT Stage 8: Creating GIFTI surfaces for {surfs + spheres}')
     if surfs:
         gifti_surfaces_wf = init_gifti_surfaces_wf(surfaces=surfs)
-        ds_surfaces_wf = init_ds_surfaces_wf(output_dir=output_dir, surfaces=surfs)
+        ds_surfaces_wf = init_ds_surfaces_wf(
+            output_dir=output_dir,
+            surfaces=surfs,
+            entities={'space': reference_anat},
+        )
 
         workflow.connect([
             (surface_recon_wf, gifti_surfaces_wf, [
@@ -1288,6 +1292,7 @@ def init_infant_anat_fit_wf(
         ds_spheres_wf = init_ds_surfaces_wf(
             output_dir=output_dir,
             surfaces=spheres,
+            entities={'space': reference_anat},
             name='ds_spheres_wf',
         )
 
@@ -1313,6 +1318,7 @@ def init_infant_anat_fit_wf(
             bids_root=bids_root,
             output_dir=output_dir,
             metrics=metrics,
+            entities={'space': reference_anat},
             name='ds_morph_wf',
         )
 
@@ -2192,7 +2198,11 @@ def init_infant_single_anat_fit_wf(
         LOGGER.info(f'ANAT Stage 7: Creating GIFTI surfaces for {surfs + spheres}')
     if surfs:
         gifti_surfaces_wf = init_gifti_surfaces_wf(surfaces=surfs)
-        ds_surfaces_wf = init_ds_surfaces_wf(output_dir=output_dir, surfaces=surfs)
+        ds_surfaces_wf = init_ds_surfaces_wf(
+            output_dir=output_dir,
+            surfaces=surfs,
+            entities={'space': reference_anat},
+        )
 
         workflow.connect([
             (surface_recon_wf, gifti_surfaces_wf, [
@@ -2218,6 +2228,7 @@ def init_infant_single_anat_fit_wf(
             output_dir=output_dir,
             surfaces=spheres,
             name='ds_spheres_wf',
+            entities={'space': reference_anat},
         )
 
         workflow.connect([
@@ -2243,6 +2254,7 @@ def init_infant_single_anat_fit_wf(
             output_dir=output_dir,
             metrics=metrics,
             name='ds_morph_wf',
+            entities={'space': reference_anat},
         )
 
         workflow.connect([
